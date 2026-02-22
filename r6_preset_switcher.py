@@ -1,4 +1,4 @@
-VERSION = "1.0"
+VERSION = "1.1"
 UPDATE_URL = "https://raw.githubusercontent.com/devinluneau18-spec/r6-recoil-switcher/main/r6_preset_switcher.py"
 
 import tkinter as tk
@@ -464,6 +464,350 @@ def ghub_save_and_run_async(calib, status_cb=None, done_cb=None):
 
 
 # ─── Calibration Window ────────────────────────────────────────────────────────
+
+# ─── Setup state file ──────────────────────────────────────────────────────────
+SETUP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "setup_complete.json")
+LUA_GITHUB_URL = "https://raw.githubusercontent.com/devinluneau18-spec/r6-recoil-switcher/main/r6_recoil.lua"
+
+def is_setup_complete():
+    return os.path.exists(SETUP_FILE)
+
+def mark_setup_complete(script_path):
+    with open(SETUP_FILE, "w") as f:
+        json.dump({"script_path": script_path}, f)
+
+def get_ghub_scriptfiles_dir():
+    appdata = os.environ.get("LOCALAPPDATA", "")
+    path = os.path.join(appdata, "LGHUB", "scriptfiles")
+    return path if os.path.isdir(path) else None
+
+def get_exe_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+def find_lua_next_to_exe():
+    """Look for r6_recoil.lua next to the exe/script."""
+    path = os.path.join(get_exe_dir(), "r6_recoil.lua")
+    return path if os.path.exists(path) else None
+
+def download_lua_script():
+    """Download the lua script from GitHub."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(LUA_GITHUB_URL, headers={"User-Agent": "R6PresetSwitcher"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.read().decode("utf-8")
+    except Exception as e:
+        return None
+
+def copy_lua_to_ghub(lua_content, dest_dir):
+    """Copy lua script into GHub scriptfiles folder."""
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, "r6_recoil.lua")
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(lua_content)
+        return dest
+    except Exception as e:
+        return None
+
+# ─── First Time Setup Wizard ───────────────────────────────────────────────────
+class SetupWizard:
+    """
+    Friendly step-by-step first-time setup wizard.
+    Walks new users through placing the Lua script and setting up GHub.
+    """
+    STEPS = [
+        {
+            "title":   "Welcome to R6 Recoil Switcher!",
+            "icon":    "🎮",
+            "body": (
+                "This app lets you instantly switch recoil presets\n"
+                "for every R6 Siege operator directly from your desktop.\n\n"
+                "This one-time setup will get everything ready for you.\n"
+                "It only takes about 2 minutes!"
+            ),
+            "btn": "LET\'S GO  →",
+        },
+        {
+            "title":   "Step 1 — Installing the Script",
+            "icon":    "📂",
+            "body": (
+                "We need to place the recoil script into your\n"
+                "Logitech GHub scripts folder.\n\n"
+                "Click INSTALL SCRIPT below and we\'ll do it automatically!"
+            ),
+            "btn": "INSTALL SCRIPT  →",
+            "action": "install_script",
+        },
+        {
+            "title":   "Step 2 — Create a GHub Profile",
+            "icon":    "⚙️",
+            "body": (
+                "Now open Logitech GHub and do the following:\n\n"
+                "1.  Create a new profile for  Rainbow Six Siege\n"
+                "2.  Click the  ☰  menu on that profile\n"
+                "3.  Click  \'Create Lua Script\'\n"
+                "4.  Delete any default code in the editor\n"
+                "5.  Copy and paste the script from the file:\n"
+                "     r6_recoil.lua  (now in your GHub scriptfiles folder)\n"
+                "6.  Click  Script  →  Save & Run\n\n"
+                "Click OPEN GHUB to launch it now, then come back here."
+            ),
+            "btn": "OPEN GHUB  →",
+            "action": "open_ghub",
+        },
+        {
+            "title":   "Step 3 — Calibrate the App",
+            "icon":    "🎯",
+            "body": (
+                "Almost done! Now we need to teach the app\n"
+                "where to click inside GHub.\n\n"
+                "Make sure GHub is open and your R6 profile is visible,\n"
+                "then click CALIBRATE below to start the quick 5-step process."
+            ),
+            "btn": "CALIBRATE GHUB  →",
+            "action": "calibrate",
+        },
+        {
+            "title":   "All Done! 🎉",
+            "icon":    "✅",
+            "body": (
+                "You\'re all set! Click any operator to instantly\n"
+                "switch your recoil preset.\n\n"
+                "The app will auto-update whenever a new version\n"
+                "is available — no action needed on your end.\n\n"
+                "Developed by Sk3rmish"
+            ),
+            "btn": "START USING THE APP  →",
+        },
+    ]
+
+    def __init__(self, root, on_complete):
+        self.root        = root
+        self.on_complete = on_complete
+        self.step        = 0
+        self.lua_dest    = None
+        self.script_path = None
+
+        self.win = tk.Toplevel(root)
+        self.win.title("R6 Recoil Switcher — Setup")
+        self.win.configure(bg="#0d0f14")
+        self.win.geometry("520x480")
+        self.win.resizable(False, False)
+        self.win.grab_set()
+        self.win.protocol("WM_DELETE_WINDOW", self._cancel)
+
+        # ── Gold top bar ──────────────────────────────────────────────────────
+        topbar = tk.Frame(self.win, bg="#e8b84b", height=6)
+        topbar.pack(fill="x")
+
+        # ── Icon ──────────────────────────────────────────────────────────────
+        self.icon_lbl = tk.Label(self.win, text="",
+                                  font=("Segoe UI Emoji", 40),
+                                  bg="#0d0f14", fg="#e8b84b")
+        self.icon_lbl.pack(pady=(30, 0))
+
+        # ── Title ─────────────────────────────────────────────────────────────
+        self.title_lbl = tk.Label(self.win, text="",
+                                   font=("Courier New", 14, "bold"),
+                                   bg="#0d0f14", fg="#e8b84b")
+        self.title_lbl.pack(pady=(10, 0))
+
+        # ── Divider ───────────────────────────────────────────────────────────
+        tk.Frame(self.win, bg="#252a38", height=1).pack(fill="x", padx=40, pady=(12, 0))
+
+        # ── Body ──────────────────────────────────────────────────────────────
+        self.body_lbl = tk.Label(self.win, text="",
+                                  font=("Courier New", 9),
+                                  bg="#0d0f14", fg="#c8cdd8",
+                                  justify="center", wraplength=440)
+        self.body_lbl.pack(pady=(16, 0), padx=30)
+
+        # ── Status label ──────────────────────────────────────────────────────
+        self.status_lbl = tk.Label(self.win, text="",
+                                    font=("Courier New", 8, "italic"),
+                                    bg="#0d0f14", fg="#4ade80")
+        self.status_lbl.pack(pady=(8, 0))
+
+        # ── Progress dots ─────────────────────────────────────────────────────
+        dot_frame = tk.Frame(self.win, bg="#0d0f14")
+        dot_frame.pack(pady=(16, 0))
+        self.dots = []
+        for i in range(len(self.STEPS)):
+            d = tk.Label(dot_frame, text="●", font=("Courier New", 10),
+                         bg="#0d0f14", fg="#252a38")
+            d.pack(side="left", padx=3)
+            self.dots.append(d)
+
+        # ── Buttons ───────────────────────────────────────────────────────────
+        btn_frame = tk.Frame(self.win, bg="#0d0f14")
+        btn_frame.pack(pady=(20, 0))
+
+        self.next_btn = tk.Button(btn_frame, text="",
+                                   font=("Courier New", 10, "bold"),
+                                   bg="#e8b84b", fg="#0d0f14",
+                                   relief="flat", bd=0,
+                                   padx=24, pady=10, cursor="hand2",
+                                   command=self._next)
+        self.next_btn.pack(side="left", padx=6)
+
+        tk.Button(btn_frame, text="SKIP SETUP",
+                  font=("Courier New", 8),
+                  bg="#1e2230", fg="#5a6070",
+                  relief="flat", bd=0,
+                  padx=16, pady=10, cursor="hand2",
+                  command=self._skip).pack(side="left", padx=6)
+
+        self._show_step()
+
+    def _show_step(self):
+        s = self.STEPS[self.step]
+        self.icon_lbl.configure(text=s["icon"])
+        self.title_lbl.configure(text=s["title"])
+        self.body_lbl.configure(text=s["body"])
+        self.next_btn.configure(text=s["btn"], state="normal")
+        self.status_lbl.configure(text="")
+        for i, d in enumerate(self.dots):
+            d.configure(fg="#e8b84b" if i == self.step else "#252a38")
+
+    def _next(self):
+        s = self.STEPS[self.step]
+        action = s.get("action")
+
+        if action == "install_script":
+            self._do_install_script()
+        elif action == "open_ghub":
+            self._do_open_ghub()
+        elif action == "calibrate":
+            self._do_calibrate()
+        else:
+            self._advance()
+
+    def _advance(self):
+        self.step += 1
+        if self.step >= len(self.STEPS):
+            self._finish()
+        else:
+            self._show_step()
+
+    def _do_install_script(self):
+        self.next_btn.configure(state="disabled")
+        self.status_lbl.configure(text="Looking for GHub...", fg="#facc15")
+
+        def run():
+            # Try to get lua from next to exe first, else download
+            lua_path = find_lua_next_to_exe()
+            if lua_path:
+                with open(lua_path, "r", encoding="utf-8") as f:
+                    lua_content = f.read()
+                self.win.after(0, lambda: self.status_lbl.configure(
+                    text="Found r6_recoil.lua locally!", fg="#4ade80"))
+            else:
+                self.win.after(0, lambda: self.status_lbl.configure(
+                    text="Downloading script from GitHub...", fg="#facc15"))
+                lua_content = download_lua_script()
+
+            if not lua_content:
+                self.win.after(0, lambda: self.status_lbl.configure(
+                    text="⚠  Could not get script. Place r6_recoil.lua next to the exe and retry.",
+                    fg="#f87171"))
+                self.win.after(0, lambda: self.next_btn.configure(state="normal"))
+                return
+
+            # Find GHub scriptfiles dir
+            ghub_dir = get_ghub_scriptfiles_dir()
+            if not ghub_dir:
+                # GHub not found - ask user to locate manually
+                self.win.after(0, self._manual_lua_install, lua_content)
+                return
+
+            dest = copy_lua_to_ghub(lua_content, ghub_dir)
+            if dest:
+                self.lua_dest = dest
+                self.script_path = dest
+                self.win.after(0, lambda: self.status_lbl.configure(
+                    text=f"✓  Script installed to GHub!", fg="#4ade80"))
+                self.win.after(800, self._advance)
+            else:
+                self.win.after(0, self._manual_lua_install, lua_content)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _manual_lua_install(self, lua_content):
+        """GHub folder not found - save next to exe and instruct user."""
+        fallback = os.path.join(get_exe_dir(), "r6_recoil.lua")
+        try:
+            with open(fallback, "w", encoding="utf-8") as f:
+                f.write(lua_content)
+        except:
+            pass
+        self.script_path = fallback
+        self.status_lbl.configure(
+            text="⚠  GHub folder not found. Saved r6_recoil.lua next to the app.",
+            fg="#facc15")
+        messagebox.showinfo(
+            "Manual Step Required",
+            "Could not find your GHub scriptfiles folder automatically.\n\n"
+            "The file  r6_recoil.lua  has been saved next to this app.\n\n"
+            "Please manually copy it to:\n"
+            "C:\\Users\\YourName\\AppData\\Local\\LGHUB\\scriptfiles\\",
+            parent=self.win
+        )
+        self.next_btn.configure(state="normal")
+        self._advance()
+
+    def _do_open_ghub(self):
+        # Try to launch GHub
+        ghub_paths = [
+            os.path.join(os.environ.get("LOCALAPPDATA",""), "LGHUB", "lghub.exe"),
+            r"C:\Program Files\LGHUB\lghub.exe",
+            r"C:\Program Files (x86)\LGHUB\lghub.exe",
+        ]
+        launched = False
+        for p in ghub_paths:
+            if os.path.exists(p):
+                subprocess.Popen([p])
+                launched = True
+                break
+        if launched:
+            self.status_lbl.configure(text="✓  GHub launched! Follow the steps above, then click next.", fg="#4ade80")
+        else:
+            self.status_lbl.configure(text="⚠  Could not find GHub — open it manually.", fg="#facc15")
+        # Don't auto-advance — user needs to do manual steps first
+        self.next_btn.configure(text="I\'VE DONE IT  →", command=self._advance)
+
+    def _do_calibrate(self):
+        if not AUTOGUI_AVAILABLE:
+            messagebox.showinfo(
+                "Install Required",
+                "Please run this in cmd first:\n\npip install pyautogui pygetwindow\n\nThen reopen the app.",
+                parent=self.win
+            )
+            return
+        self.win.withdraw()
+        def on_done(coords):
+            self.win.deiconify()
+            self.status_lbl.configure(text="✓  Calibration complete!", fg="#4ade80")
+            self._advance()
+        CalibrationWindow(self.root, None, on_done)
+
+    def _finish(self):
+        # Save setup as complete with script path
+        if self.script_path:
+            mark_setup_complete(self.script_path)
+        self.win.destroy()
+        self.on_complete(self.script_path)
+
+    def _skip(self):
+        self.win.destroy()
+        self.on_complete(None)
+
+    def _cancel(self):
+        self.win.destroy()
+        self.on_complete(None)
+
 class CalibrationWindow:
     """
     4-step wizard — captures mouse position for each GHub click target.
@@ -1254,5 +1598,15 @@ if __name__ == "__main__":
     style.configure("Vertical.TScrollbar",
                     background="#1e2230", troughcolor="#0d0f14",
                     arrowcolor="#5a6070", bordercolor="#0d0f14")
-    R6PresetApp(root)
+
+    app = R6PresetApp(root)
+
+    # Show setup wizard on first run
+    if not is_setup_complete():
+        def on_setup_done(script_path):
+            if script_path:
+                app.script_path.set(script_path)
+                app._refresh_active_preset()
+        root.after(300, lambda: SetupWizard(root, on_setup_done))
+
     root.mainloop()
