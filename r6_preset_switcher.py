@@ -1,4 +1,4 @@
-VERSION = "1.0"
+VERSION = "1.1"
 UPDATE_URL = "https://raw.githubusercontent.com/devinluneau18-spec/r6-recoil-switcher/main/r6_preset_switcher.py"
 
 import tkinter as tk
@@ -1061,17 +1061,19 @@ class R6PresetApp:
         else:
             self.status_var.set("⚠  Script not auto-detected — use Browse to locate it.")
 
-        # Check for updates in background
-        def on_update_status(msg):
-            self.root.after(0, lambda: self.status_var.set(msg))
-        def on_update_done(updated, msg):
-            self.root.after(0, lambda: self.status_var.set(msg))
-            if updated:
-                self.root.after(0, lambda: messagebox.showinfo(
-                    "Update Installed",
-                    f"{msg}\n\nThe app will now relaunch with the new version."
-                ))
-        check_for_update(status_cb=on_update_status, done_cb=on_update_done)
+        # Only check for updates if setup is already complete
+        # (prevents update restart from interrupting first-time setup)
+        if is_setup_complete():
+            def on_update_status(msg):
+                self.root.after(0, lambda: self.status_var.set(msg))
+            def on_update_done(updated, msg):
+                self.root.after(0, lambda: self.status_var.set(msg))
+                if updated:
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "Update Installed",
+                        f"{msg}\n\nThe app will now relaunch with the new version."
+                    ))
+            check_for_update(status_cb=on_update_status, done_cb=on_update_done)
 
     def _build_ui(self):
         # ── Top bar ──────────────────────────────────────────────────────────────
