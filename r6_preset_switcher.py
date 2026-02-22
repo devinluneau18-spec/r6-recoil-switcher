@@ -1,4 +1,4 @@
-VERSION = "1.1"
+VERSION = "1.0"
 UPDATE_URL = "https://raw.githubusercontent.com/devinluneau18-spec/r6-recoil-switcher/main/r6_preset_switcher.py"
 
 import tkinter as tk
