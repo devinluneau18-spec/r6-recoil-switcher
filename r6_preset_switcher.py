@@ -1,59 +1,6 @@
-
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-import os, re, glob, time, threading, json, sys, subprocess
-
-# ─── Auto-updater ──────────────────────────────────────────────────────────────
-def check_for_update(status_cb=None, done_cb=None):
-    """Check GitHub for a newer version and auto-update if found."""
-    def _run():
-        try:
-            import urllib.request
-            if status_cb:
-                status_cb("Checking for updates...")
-            req = urllib.request.Request(UPDATE_URL, headers={"User-Agent": "R6PresetSwitcher"})
-            with urllib.request.urlopen(req, timeout=5) as r:
-                remote_src = r.read().decode("utf-8")
-
-            # Extract VERSION from remote file
-            import re as _re
-            m = _re.search(r'VERSION\s*=\s*["\']([\.\d]+)["\']', remote_src)
-            if not m:
-                if done_cb: done_cb(False, "Up to date.")
-                return
-
-            remote_ver = m.group(1)
-            if remote_ver == VERSION:
-                if done_cb: done_cb(False, f"Up to date  (v{VERSION})")
-                return
-
-            # Newer version found — save and relaunch
-            if status_cb: status_cb(f"Update found v{remote_ver} — installing...")
-
-            # Write new script next to current exe/script
-            if getattr(sys, "frozen", False):
-                # Running as exe — write a .py alongside and run it with pythonw
-                script_path = os.path.join(os.path.dirname(sys.executable), "r6_preset_switcher.py")
-            else:
-                script_path = os.path.abspath(__file__)
-
-            with open(script_path, "w", encoding="utf-8") as f:
-                f.write(remote_src)
-
-            if done_cb: done_cb(True, f"Updated to v{remote_ver}! Relaunching...")
-
-            # Relaunch
-            time.sleep(1.2)
-            if getattr(sys, "frozen", False):
-                subprocess.Popen([sys.executable])
-            else:
-                subprocess.Popen([sys.executable, script_path])
-            os._exit(0)
-
-        except Exception as e:
-            if done_cb: done_cb(False, f"Up to date  (v{VERSION})")
-
-    threading.Thread(target=_run, daemon=True).start()
+import os, re, glob, time, threading, json
 
 
 
@@ -541,7 +488,7 @@ class CalibrationWindow:
 
     def _begin_step(self):
         self.start_btn.configure(state="disabled")
-        self._countdown(3)
+        self._countdown(5)
 
     def _countdown(self, n):
         if n > 0:
@@ -715,17 +662,7 @@ class R6PresetApp:
         else:
             self.status_var.set("⚠  Script not auto-detected — use Browse to locate it.")
 
-        # Check for updates in background
-        def on_update_status(msg):
-            self.root.after(0, lambda: self.status_var.set(msg))
-        def on_update_done(updated, msg):
-            self.root.after(0, lambda: self.status_var.set(msg))
-            if updated:
-                self.root.after(0, lambda: messagebox.showinfo(
-                    "Update Installed",
-                    f"{msg}\n\nThe app will now relaunch with the new version."
-                ))
-        check_for_update(status_cb=on_update_status, done_cb=on_update_done)
+
 
     def _build_ui(self):
         # ── Top bar ──────────────────────────────────────────────────────────────
@@ -736,8 +673,7 @@ class R6PresetApp:
                  bg="#0d0f14", fg="#e8b84b").pack(side="left")
         tk.Label(topbar, text=" RECOIL SWITCHER", font=("Courier New", 14, "bold"),
                  bg="#0d0f14", fg="#c8cdd8").pack(side="left", pady=(6, 0))
-        tk.Label(topbar, text=f"v{VERSION}", font=("Courier New", 8),
-                 bg="#0d0f14", fg="#3a4050").pack(side="left", pady=(10, 0), padx=(6,0))
+
         tk.Label(topbar, text="Developed By Sk3rmish",
                  font=("Courier New", 8, "italic"),
                  bg="#0d0f14", fg="#5a6070").pack(side="left", pady=(10, 0), padx=(16, 0))
@@ -861,6 +797,12 @@ class R6PresetApp:
 
         self._build_edit_panel()
 
+        # ── Inline calibration panel (hidden until CALIBRATE is clicked) ──────────
+        self.calib_panel = tk.Frame(self.content_frame, bg="#161920", width=260)
+        # not packed yet — shown on demand
+
+        self._build_calib_panel()
+
         # ── Status bar ────────────────────────────────────────────────────────────
         statusbar = tk.Frame(self.root, bg="#0a0c10", height=32)
         statusbar.pack(fill="x", side="bottom")
@@ -887,7 +829,13 @@ class R6PresetApp:
             messagebox.showerror("Missing Package",
                 "Please install pyautogui first:\n\npip install pyautogui pygetwindow")
             return
-        CalibrationWindow(self.root, self.calibration, self._on_calibration_done)
+        # Close edit panel if open
+        self._close_edit_panel()
+        self._calib_step = 0
+        self._calib_coords = dict(self.calibration) if self.calibration else {}
+        self._calib_show_step()
+        if not self.calib_panel.winfo_ismapped():
+            self.calib_panel.pack(side="right", fill="y", padx=(8, 0))
 
     def _on_calibration_done(self, coords):
         self.calibration = coords
@@ -994,6 +942,117 @@ class R6PresetApp:
                 w.bind("<Leave>", on_leave)
 
         self._highlight_active()
+
+
+    # ── Inline calibration panel ──────────────────────────────────────────────────
+    def _build_calib_panel(self):
+        """Build the static calibration panel structure once."""
+        p = self.calib_panel
+
+        # Header row with close button
+        close_row = tk.Frame(p, bg="#161920")
+        close_row.pack(fill="x", padx=10, pady=(10, 0))
+        tk.Label(close_row, text="CALIBRATE GHUB",
+                 font=("Courier New", 8, "bold"),
+                 bg="#161920", fg="#5a6070").pack(side="left")
+        tk.Button(close_row, text="✕", font=("Courier New", 10, "bold"),
+                  bg="#161920", fg="#5a6070", relief="flat", bd=0,
+                  cursor="hand2", command=self._close_calib_panel
+                  ).pack(side="right")
+
+        tk.Frame(p, bg="#252a38", height=1).pack(fill="x", padx=10, pady=(8, 0))
+
+        # Step title
+        self.cp_title = tk.Label(p, text="",
+                                  font=("Courier New", 9, "bold"),
+                                  bg="#161920", fg="#7dc4e4",
+                                  wraplength=220, justify="center")
+        self.cp_title.pack(pady=(10, 0), padx=10)
+
+        # Instruction
+        self.cp_instruction = tk.Label(p, text="",
+                                        font=("Courier New", 8),
+                                        bg="#161920", fg="#c8cdd8",
+                                        wraplength=220, justify="center")
+        self.cp_instruction.pack(pady=(8, 0), padx=10)
+
+        # Countdown
+        self.cp_countdown = tk.Label(p, text="",
+                                      font=("Courier New", 28, "bold"),
+                                      bg="#161920", fg="#e8b84b")
+        self.cp_countdown.pack(pady=(10, 0))
+
+        # Step label
+        self.cp_step_lbl = tk.Label(p, text="",
+                                     font=("Courier New", 7),
+                                     bg="#161920", fg="#5a6070",
+                                     wraplength=220, justify="center")
+        self.cp_step_lbl.pack(pady=(4, 0), padx=10)
+
+        tk.Frame(p, bg="#252a38", height=1).pack(fill="x", padx=10, pady=(10, 0))
+
+        # Start button
+        self.cp_start_btn = tk.Button(p, text="",
+                                       font=("Courier New", 9, "bold"),
+                                       bg="#e8b84b", fg="#0d0f14",
+                                       relief="flat", bd=0,
+                                       pady=8, cursor="hand2",
+                                       command=self._calib_begin_step)
+        self.cp_start_btn.pack(fill="x", padx=16, pady=(12, 4))
+
+        tk.Button(p, text="CANCEL",
+                  font=("Courier New", 8),
+                  bg="#1e2230", fg="#5a6070",
+                  relief="flat", bd=0,
+                  pady=6, cursor="hand2",
+                  command=self._close_calib_panel
+                  ).pack(fill="x", padx=16)
+
+    def _calib_show_step(self):
+        s = CALIB_STEPS[self._calib_step]
+        self.cp_title.configure(text=s["title"])
+        self.cp_instruction.configure(text=s["instruction"])
+        self.cp_step_lbl.configure(text=s["label"])
+        self.cp_countdown.configure(text="")
+        self.cp_start_btn.configure(
+            text=f"START  ({self._calib_step + 1} of {len(CALIB_STEPS)})",
+            state="normal"
+        )
+
+    def _calib_begin_step(self):
+        self.cp_start_btn.configure(state="disabled")
+        self._calib_countdown(5)
+
+    def _calib_countdown(self, n):
+        if n > 0:
+            self.cp_countdown.configure(text=str(n))
+            self.root.after(1000, lambda: self._calib_countdown(n - 1))
+        else:
+            self.cp_countdown.configure(text="📍")
+            self.root.after(150, self._calib_capture)
+
+    def _calib_capture(self):
+        x, y = pyautogui.position()
+        key = CALIB_STEPS[self._calib_step]["key"]
+        self._calib_coords[f"{key}_x"] = x
+        self._calib_coords[f"{key}_y"] = y
+        self.cp_countdown.configure(text=f"✓ ({x},{y})")
+
+        if self._calib_step < len(CALIB_STEPS) - 1:
+            self._calib_step += 1
+            self.root.after(900, self._calib_show_step)
+        else:
+            self.root.after(600, self._calib_finish)
+
+    def _calib_finish(self):
+        save_calibration(self._calib_coords)
+        self.calibration = self._calib_coords
+        self._update_calib_badge()
+        self.status_var.set("✓  Calibration saved! All 5 positions captured.")
+        self._close_calib_panel()
+
+    def _close_calib_panel(self):
+        self.calib_panel.pack_forget()
 
     # ── Inline edit panel ─────────────────────────────────────────────────────────
     def _build_edit_panel(self):
