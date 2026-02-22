@@ -1055,6 +1055,17 @@ class R6PresetApp:
         self._build_ui()
 
         found = find_ghub_script()
+        if not found:
+            # Try loading the path saved during setup
+            try:
+                with open(SETUP_FILE, "r") as _sf:
+                    _sd = json.load(_sf)
+                    _saved = _sd.get("script_path", "")
+                    if _saved and os.path.isfile(_saved):
+                        found = _saved
+            except:
+                pass
+
         if found:
             self.script_path.set(found)
             self._refresh_active_preset()
