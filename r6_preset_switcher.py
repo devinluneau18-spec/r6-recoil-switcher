@@ -1,7 +1,63 @@
 VERSION = "1.0"
+UPDATE_URL = "https://raw.githubusercontent.com/devinluneau18-spec/r6-recoil-switcher/main/r6_preset_switcher.py"
+
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-import os, re, glob, time, threading, json
+import os, re, glob, time, threading, json, sys, subprocess
+
+# ─── Auto-updater ──────────────────────────────────────────────────────────────
+def check_for_update(status_cb=None, done_cb=None):
+    """Check GitHub for a newer version and auto-update if found."""
+    def _run():
+        try:
+            import urllib.request
+            if status_cb:
+                status_cb("Checking for updates...")
+            req = urllib.request.Request(UPDATE_URL, headers={"User-Agent": "R6PresetSwitcher"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                remote_src = r.read().decode("utf-8")
+
+            # Extract VERSION from remote file
+            import re as _re
+            m = _re.search(r'VERSION\s*=\s*["\']([\.\d]+)["\']', remote_src)
+            if not m:
+                if done_cb: done_cb(False, "Up to date.")
+                return
+
+            remote_ver = m.group(1)
+            if remote_ver == VERSION:
+                if done_cb: done_cb(False, f"Up to date  (v{VERSION})")
+                return
+
+            # Newer version found — save and relaunch
+            if status_cb: status_cb(f"Update found v{remote_ver} — installing...")
+
+            # Write new script next to current exe/script
+            if getattr(sys, "frozen", False):
+                # Running as exe — write a .py alongside and run it with pythonw
+                script_path = os.path.join(os.path.dirname(sys.executable), "r6_preset_switcher.py")
+            else:
+                script_path = os.path.abspath(__file__)
+
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write(remote_src)
+
+            if done_cb: done_cb(True, f"Updated to v{remote_ver}! Relaunching...")
+
+            # Relaunch
+            time.sleep(1.2)
+            if getattr(sys, "frozen", False):
+                subprocess.Popen([sys.executable])
+            else:
+                subprocess.Popen([sys.executable, script_path])
+            os._exit(0)
+
+        except Exception as e:
+            if done_cb: done_cb(False, f"Up to date  (v{VERSION})")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 
 # ─── Optional automation imports ───────────────────────────────────────────────
 try:
@@ -262,20 +318,57 @@ def write_strengths(filepath, preset_value, new_vert, new_horiz):
     """
     Finds the elseif block for the given preset and updates
     VerticalStrength and HorizontalStrength values inside it.
+    Tries multiple strategies to handle different script formatting.
     """
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
 
-        # Match the elseif/if block for this preset and replace both strength lines
-        # Pattern: after the preset name line, find VerticalStrength and HorizontalStrength
+        # Strategy 1: strict — preset line immediately followed by strength lines
         pattern = (
             r'((?:elseif|if)\s+Preset\s*==\s*"' + re.escape(preset_value) + r'"[^\n]*\n'
             r'\s*VerticalStrength\s*=\s*)[-\d.]+'
             r'(\s*\n\s*HorizontalStrength\s*=\s*)[-\d.]+'
         )
-        replacement = rf'\g<1>{new_vert}\g<2>{new_horiz}'
-        new_content, count = re.subn(pattern, replacement, content)
+        new_content, count = re.subn(pattern, rf'\g<1>{new_vert}\g<2>{new_horiz}', content)
+
+        # Strategy 2: case-insensitive preset match (handles casing mismatches)
+        if count == 0:
+            pattern = (
+                r'((?:elseif|if)\s+Preset\s*==\s*"' + re.escape(preset_value) + r'"[^\n]*\n'
+                r'\s*VerticalStrength\s*=\s*)[-\d.]+'
+                r'(\s*\n\s*HorizontalStrength\s*=\s*)[-\d.]+'
+            )
+            new_content, count = re.subn(pattern, rf'\g<1>{new_vert}\g<2>{new_horiz}', content, flags=re.IGNORECASE)
+
+        # Strategy 3: flexible — allow any whitespace/blank lines between preset and strength lines
+        if count == 0:
+            pattern = (
+                r'((?:elseif|if)\s+Preset\s*==\s*"' + re.escape(preset_value) + r'"[^\n]*\n'
+                r'(?:[^\n]*\n){0,5}?'   # allow up to 5 lines gap
+                r'\s*VerticalStrength\s*=\s*)[-\d.]+'
+                r'((?:[^\n]*\n){0,5}?'  # allow up to 5 lines gap
+                r'\s*HorizontalStrength\s*=\s*)[-\d.]+'
+            )
+            new_content, count = re.subn(pattern, rf'\g<1>{new_vert}\g<2>{new_horiz}', content, flags=re.IGNORECASE)
+
+        # Strategy 4: just find and replace the VerticalStrength/HorizontalStrength
+        # near where this preset is mentioned anywhere in the block
+        if count == 0:
+            # Find the preset's position in file, then update the nearest strength values after it
+            preset_match = re.search(
+                r'Preset\s*==\s*"' + re.escape(preset_value) + r'"',
+                content, re.IGNORECASE
+            )
+            if preset_match:
+                # Find next elseif/end after this preset to define the block boundary
+                block_end = re.search(r'\n\s*(?:elseif|end)', content[preset_match.start():])
+                block = content[preset_match.start(): preset_match.start() + (block_end.start() if block_end else 500)]
+                new_block = re.sub(r'(VerticalStrength\s*=\s*)[-\d.]+', rf'\g<1>{new_vert}', block)
+                new_block = re.sub(r'(HorizontalStrength\s*=\s*)[-\d.]+', rf'\g<1>{new_horiz}', new_block)
+                if new_block != block:
+                    new_content = content[:preset_match.start()] + new_block + content[preset_match.start() + len(block):]
+                    count = 1
 
         if count == 0:
             return "Preset block not found in script."
@@ -624,6 +717,18 @@ class R6PresetApp:
         else:
             self.status_var.set("⚠  Script not auto-detected — use Browse to locate it.")
 
+        # Check for updates in background
+        def on_update_status(msg):
+            self.root.after(0, lambda: self.status_var.set(msg))
+        def on_update_done(updated, msg):
+            self.root.after(0, lambda: self.status_var.set(msg))
+            if updated:
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "Update Installed",
+                    f"{msg}\n\nThe app will now relaunch with the new version."
+                ))
+        check_for_update(status_cb=on_update_status, done_cb=on_update_done)
+
     def _build_ui(self):
         # ── Top bar ──────────────────────────────────────────────────────────────
         topbar = tk.Frame(self.root, bg="#0d0f14")
@@ -633,6 +738,11 @@ class R6PresetApp:
                  bg="#0d0f14", fg="#e8b84b").pack(side="left")
         tk.Label(topbar, text=" RECOIL SWITCHER", font=("Courier New", 14, "bold"),
                  bg="#0d0f14", fg="#c8cdd8").pack(side="left", pady=(6, 0))
+        tk.Label(topbar, text=f"v{VERSION}", font=("Courier New", 8),
+                 bg="#0d0f14", fg="#3a4050").pack(side="left", pady=(10, 0), padx=(6,0))
+        tk.Label(topbar, text="Developed By Sk3rmish",
+                 font=("Courier New", 8, "italic"),
+                 bg="#0d0f14", fg="#5a6070").pack(side="left", pady=(10, 0), padx=(16, 0))
 
         self.calib_badge = tk.Label(topbar, font=("Courier New", 8, "bold"), bg="#0d0f14")
         self.calib_badge.pack(side="right", pady=(8, 0))
